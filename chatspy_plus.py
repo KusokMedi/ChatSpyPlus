@@ -965,7 +965,7 @@ class _AdapterParticipantProvider(ParticipantProvider):
 __id__ = "chatspy_plus"
 __name__ = "ChatSpy+"
 __description__ = "Shows participants' activity in other common chats."
-__author__ = "@kusokmedi"
+__author__ = "@kusokmedi52"
 __version__ = "1.0.0"
 __icon__ = "exteraPlugins/1"
 __app_version__ = ">=12.5.1"
