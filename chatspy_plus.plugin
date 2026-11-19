@@ -550,6 +550,7 @@ class PlatformAdapter:
     def __init__(self, plugin: Any) -> None:
         self.plugin = plugin
         self.logger = getattr(plugin, "logger", _FallbackLogger())
+        self._standard_status: Optional[str] = None
 
     def current_dialog_id(self) -> Optional[Any]:
         try:
@@ -572,7 +573,74 @@ class PlatformAdapter:
             return False
 
     def get_participants(self, dialog_id: Any) -> List[ParticipantInfo]:
-        return []
+        result: List[ParticipantInfo] = []
+        try:
+            from client_utils import get_messages_controller  # type: ignore
+            from hook_utils import get_private_field  # type: ignore
+            mc = get_messages_controller()
+            if dialog_id is None:
+                return result
+            if isinstance(dialog_id, int) and dialog_id > 0:
+                u = mc.getUser(dialog_id) if hasattr(mc, "getUser") else None
+                if u is not None:
+                    first = getattr(u, "first_name", "") or ""
+                    last = getattr(u, "last_name", "") or ""
+                    name = (first + " " + last).strip()
+                    username = getattr(u, "username", "") or ""
+                    result.append(ParticipantInfo(user_id=dialog_id, display_name=name, username=username))
+                else:
+                    result.append(ParticipantInfo(user_id=dialog_id))
+                return result
+            # group/channel
+            cid = -dialog_id if isinstance(dialog_id, int) else dialog_id
+            users = None
+            # try chatParticipants map
+            try:
+                cp = get_private_field(mc, "chatParticipants")
+                if cp is not None and hasattr(cp, "get"):
+                    obj = cp.get(cid) if isinstance(cid, int) else None
+                    if obj is not None:
+                        for attr in ("participants", "users"):
+                            if hasattr(obj, attr):
+                                users = getattr(obj, attr)
+                                break
+            except Exception:  # noqa: BLE001
+                users = None
+            if users is None:
+                # try public method
+                try:
+                    if hasattr(mc, "getChatParticipants"):
+                        users = mc.getChatParticipants(cid)
+                except Exception:  # noqa: BLE001
+                    users = None
+            if users is not None:
+                for u in list(users):
+                    uid = None
+                    for attr in ("user_id", "userId", "id", "uid"):
+                        if hasattr(u, attr):
+                            uid = getattr(u, attr)
+                            break
+                    if uid is None and hasattr(u, "user"):
+                        uid = getattr(getattr(u, "user"), "id", None)
+                    if uid is None:
+                        continue
+                    user_obj = getattr(u, "user", None)
+                    if user_obj is None:
+                        try:
+                            user_obj = mc.getUser(uid)
+                        except Exception:  # noqa: BLE001
+                            user_obj = None
+                    first = getattr(user_obj, "first_name", "") if user_obj is not None else ""
+                    last = getattr(user_obj, "last_name", "") if user_obj is not None else ""
+                    name = ((first or "") + " " + (last or "")).strip()
+                    username = getattr(user_obj, "username", "") if user_obj is not None else ""
+                    result.append(ParticipantInfo(user_id=uid, display_name=name, username=username or ""))
+            if not result:
+                # fallback: at least current user? no
+                pass
+        except Exception as exc:  # noqa: BLE001
+            self.logger.error(f"get_participants failed: {exc}")
+        return result
 
     def get_common_chats(self, user_id: Any, exclude_chat_id: Any) -> List[ChatInfo]:
         result: List[ChatInfo] = []
@@ -617,10 +685,52 @@ class PlatformAdapter:
         return [c for c in result if c.chat_id != exclude_chat_id]
 
     def set_status_text(self, text: str) -> None:
-        pass
+        try:
+            from client_utils import get_last_fragment  # type: ignore
+            from hook_utils import get_private_field  # type: ignore
+            from android_utils import run_on_ui_thread  # type: ignore
+            fragment = get_last_fragment()
+            if fragment is None:
+                return
+
+            def apply():
+                try:
+                    if self._standard_status is None:
+                        try:
+                            ab0 = get_private_field(fragment, "actionBar")
+                            if ab0 is not None and hasattr(ab0, "getSubtitle"):
+                                self._standard_status = ab0.getSubtitle()
+                            else:
+                                tv0 = get_private_field(fragment, "subtitleTextView")
+                                if tv0 is not None and hasattr(tv0, "getText"):
+                                    self._standard_status = str(tv0.getText())
+                        except Exception:  # noqa: BLE001
+                            self._standard_status = ""
+                    ab = get_private_field(fragment, "actionBar")
+                    if ab is not None and hasattr(ab, "setSubtitle"):
+                        try:
+                            ab.setSubtitle(text)
+                            return
+                        except Exception:  # noqa: BLE001
+                            pass
+                    tv = get_private_field(fragment, "subtitleTextView")
+                    if tv is not None and hasattr(tv, "setText"):
+                        try:
+                            tv.setText(text)
+                            return
+                        except Exception:  # noqa: BLE001
+                            pass
+                except Exception:  # noqa: BLE001
+                    pass
+
+            run_on_ui_thread(apply)
+        except Exception as exc:  # noqa: BLE001
+            self.logger.error(f"set_status_text failed: {exc}")
 
     def get_standard_status(self) -> str:
-        return ""
+        if self._standard_status is None:
+            return ""
+        return self._standard_status
 
     def show_error(self, message: str) -> None:
         try:
@@ -755,7 +865,33 @@ class ChatSpyPlugin(BasePlugin):
     def handle_dialog_closed(self) -> None:
         self.lifecycle.close_context()
 
+    def ensure_context(self, language: Language = Language.RU) -> Optional[TrackingContext]:
+        if not self.settings.is_enabled():
+            return None
+        dialog_id = self.adapter.current_dialog_id()
+        if dialog_id is None:
+            return self.lifecycle.current
+        ctx = self.lifecycle.current
+        if ctx is not None and ctx.dialog_id == dialog_id:
+            return ctx
+        if ctx is not None:
+            self.handle_dialog_closed()
+        participants = self.adapter.get_participants(dialog_id) if hasattr(self.adapter, "get_participants") else []
+        dialog_type = "group" if self.adapter.is_group(dialog_id) else "private"
+        try:
+            return self.handle_dialog_opened(
+                dialog_id=dialog_id,
+                dialog_type=dialog_type,
+                participants=participants,
+                language=language,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.error_logger.log("lifecycle", "ensure_context failed", exc)
+            return None
+
     def handle_activity_update(self, update: Any, now: Optional[float] = None) -> Optional[ActivityEvent]:
+        if self.lifecycle.current is None:
+            self.ensure_context()
         ctx = self.lifecycle.current
         if ctx is None or not self.settings.is_enabled():
             return None
