@@ -44,6 +44,23 @@ except Exception:  # noqa: BLE001
         icon: str = ""
 
 try:
+    from base_plugin import MenuItemData, MenuItemType  # type: ignore
+except Exception:  # noqa: BLE001
+    @dataclass
+    class MenuItemData:  # type: ignore
+        menu_type: Any = None
+        text: str = ""
+        on_click: Any = None
+        item_id: Optional[str] = None
+        icon: Optional[str] = None
+        subtext: Optional[str] = None
+        condition: Optional[str] = None
+        priority: int = 0
+
+    class MenuItemType:  # type: ignore
+        DRAWER_MENU = "drawer"
+
+try:
     from hook_utils import find_class  # type: ignore
 except Exception:  # noqa: BLE001
     def find_class(name):  # type: ignore
@@ -796,8 +813,25 @@ class ChatSpyPlugin(BasePlugin):
             self.lifecycle.set_status_controller(self.status_controller)
             if self._enabled:
                 self._register_hooks()
+            try:
+                self.add_menu_item(MenuItemData(
+                    menu_type=MenuItemType.DRAWER_MENU,
+                    text="ChatSpy+ errors",
+                    on_click=self._show_errors,
+                    icon="msg_info",
+                ))
+            except Exception as exc:  # noqa: BLE001
+                self.error_logger.log("menu", "add_menu_item failed", exc)
         except Exception as exc:  # noqa: BLE001
             self.error_logger.log("lifecycle", "on_plugin_load failed", exc)
+
+    def _show_errors(self, context=None) -> None:
+        errs = self.error_logger.all()
+        if not errs:
+            self.adapter.show_error("ChatSpy+: no errors")
+            return
+        msg = "\n".join(f"{e['category']}: {e['message']}" for e in errs[-15:])
+        self.adapter.show_error(msg)
 
     def on_plugin_unload(self) -> None:
         try:
@@ -831,6 +865,9 @@ class ChatSpyPlugin(BasePlugin):
         language: Language = Language.RU,
     ) -> TrackingContext:
         if not self.settings.is_enabled():
+            self.handle_dialog_closed()
+            return None  # type: ignore
+        if dialog_type != "private":
             self.handle_dialog_closed()
             return None  # type: ignore
         if participants is None:
@@ -877,7 +914,11 @@ class ChatSpyPlugin(BasePlugin):
         if ctx is not None:
             self.handle_dialog_closed()
         participants = self.adapter.get_participants(dialog_id) if hasattr(self.adapter, "get_participants") else []
-        dialog_type = "group" if self.adapter.is_group(dialog_id) else "private"
+        if self.adapter.is_group(dialog_id):
+            # Only private chats are supported.
+            self.handle_dialog_closed()
+            return None
+        dialog_type = "private"
         try:
             return self.handle_dialog_opened(
                 dialog_id=dialog_id,
