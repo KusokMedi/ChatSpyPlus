@@ -93,6 +93,13 @@ class ActivityType(str, Enum):
     TYPING = "typing"
     SENDING_PHOTO = "sending_photo"
     SENDING_VIDEO = "sending_video"
+    CHOOSING_STICKER = "choosing_sticker"
+    RECORDING_VIDEO = "recording_video"
+    UPLOADING_PHOTO = "uploading_photo"
+    UPLOADING_VIDEO = "uploading_video"
+    UPLOADING_FILE = "uploading_file"
+    UPLOADING_AUDIO = "uploading_audio"
+    PLAYING_GAME = "playing_game"
     SENDING_FILE = "sending_file"
     SENDING_AUDIO = "sending_audio"
     SENDING_GAME = "sending_game"
@@ -107,6 +114,13 @@ VERBS_RU = {
     ActivityType.TYPING: "печатает",
     ActivityType.SENDING_PHOTO: "отправляет фото",
     ActivityType.SENDING_VIDEO: "отправляет видео",
+    ActivityType.CHOOSING_STICKER: "выбирает стикер",
+    ActivityType.RECORDING_VIDEO: "записывает видео",
+    ActivityType.UPLOADING_PHOTO: "отправляет фото",
+    ActivityType.UPLOADING_VIDEO: "отправляет видео",
+    ActivityType.UPLOADING_FILE: "отправляет файл",
+    ActivityType.UPLOADING_AUDIO: "отправляет аудио",
+    ActivityType.PLAYING_GAME: "играет",
     ActivityType.SENDING_FILE: "отправляет файл",
     ActivityType.SENDING_AUDIO: "отправляет аудио",
     ActivityType.SENDING_GAME: "отправляет игру",
@@ -121,6 +135,13 @@ VERBS_EN = {
     ActivityType.TYPING: "is typing",
     ActivityType.SENDING_PHOTO: "is sending a photo",
     ActivityType.SENDING_VIDEO: "is sending a video",
+    ActivityType.CHOOSING_STICKER: "is choosing a sticker",
+    ActivityType.RECORDING_VIDEO: "is recording a video",
+    ActivityType.UPLOADING_PHOTO: "is sending a photo",
+    ActivityType.UPLOADING_VIDEO: "is sending a video",
+    ActivityType.UPLOADING_FILE: "is sending a file",
+    ActivityType.UPLOADING_AUDIO: "is sending audio",
+    ActivityType.PLAYING_GAME: "is playing a game",
     ActivityType.SENDING_FILE: "is sending a file",
     ActivityType.SENDING_AUDIO: "is sending audio",
     ActivityType.SENDING_GAME: "is sending a game",
@@ -528,15 +549,23 @@ def normalize_typing_update(update: Any, common_chat_ids: Set[Any]) -> Optional[
     action_name = type(action).__name__ if action is not None else ""
     lowered = action_name.lower()
     mapping = [
+        ("sticker", ActivityType.CHOOSING_STICKER),
+        ("recordvideo", ActivityType.RECORDING_VIDEO),
+        ("recordround", ActivityType.RECORDING_ROUND),
+        ("round", ActivityType.RECORDING_ROUND),
+        ("uploadphoto", ActivityType.UPLOADING_PHOTO),
+        ("uploadvideo", ActivityType.UPLOADING_VIDEO),
+        ("uploaddocument", ActivityType.UPLOADING_FILE),
+        ("uploadfile", ActivityType.UPLOADING_FILE),
+        ("uploadaudio", ActivityType.UPLOADING_AUDIO),
         ("photo", ActivityType.SENDING_PHOTO),
         ("video", ActivityType.SENDING_VIDEO),
         ("document", ActivityType.SENDING_FILE),
         ("file", ActivityType.SENDING_FILE),
         ("audio", ActivityType.SENDING_AUDIO),
-        ("game", ActivityType.SENDING_GAME),
+        ("game", ActivityType.PLAYING_GAME),
         ("contact", ActivityType.SELECTING_CONTACT),
         ("location", ActivityType.SELECTING_LOCATION),
-        ("round", ActivityType.RECORDING_ROUND),
         ("voice", ActivityType.RECORDING_AUDIO),
     ]
     for needle, atype in mapping:
@@ -676,6 +705,15 @@ class PlatformAdapter:
                         input_user = mc.getInputUser(u)
             except Exception:  # noqa: BLE001
                 input_user = None
+            if input_user is None and u is not None:
+                try:
+                    from org.telegram.tgnet import TLRPC  # type: ignore
+                    iu = TLRPC.TL_inputUser()
+                    iu.user_id = getattr(u, "id", user_id)
+                    iu.access_hash = getattr(u, "access_hash", 0)
+                    input_user = iu
+                except Exception:  # noqa: BLE001
+                    input_user = None
             if input_user is None:
                 return result
             req.user_id = input_user
@@ -901,6 +939,10 @@ class ChatSpyPlugin(BasePlugin):
 
     def handle_dialog_closed(self) -> None:
         self.lifecycle.close_context()
+        try:
+            self.adapter._standard_status = None
+        except Exception:  # noqa: BLE001
+            pass
 
     def ensure_context(self, language: Language = Language.RU) -> Optional[TrackingContext]:
         if not self.settings.is_enabled():
